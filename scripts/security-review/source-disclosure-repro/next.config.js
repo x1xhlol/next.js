@@ -1,0 +1,7 @@
+module.exports = {}
+/** @type {import('next').NextConfig} */
+module.exports = {
+  experimental: {
+    serverActions: {},
+  },
+}
