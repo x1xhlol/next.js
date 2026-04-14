@@ -162,6 +162,69 @@ describe('app-dir action size limit invalid config', () => {
     })
   })
 
+  describe('should respect the size set in serverActions.bodySizeLimit for plaintext fetch actions in edge runtime', () => {
+    beforeEach(async () => {
+      await next.start()
+    })
+
+    it('should not error for requests that stay below the size limit', async () => {
+      const browser = await next.browser('/file/edge')
+      const requestTracker = createRequestTracker(browser)
+
+      const [, actionResponse] = await requestTracker.captureResponse(
+        () => browser.elementByCss('#size-1mb').click(),
+        { request: { method: 'POST', pathname: '/file/edge' } }
+      )
+      expect(actionResponse.status()).toBe(200)
+      expect(
+        await actionResponse.request().headerValue('content-type')
+      ).toStartWith('text/plain')
+
+      if (!isNextDeploy) {
+        await retry(() =>
+          expect(logs).toContainEqual(
+            expect.stringContaining(`size = ${accountForOverhead(1)}`)
+          )
+        )
+        expect(logs).not.toContainEqual(
+          expect.stringContaining('Error: Body exceeded 2mb limit')
+        )
+      }
+    })
+
+    it('should error for requests that exceed the size limit', async () => {
+      const browser = await next.browser('/file/edge')
+      const requestTracker = createRequestTracker(browser)
+
+      const [, actionResponse] = await requestTracker.captureResponse(
+        () => browser.elementByCss('#size-3mb').click(),
+        { request: { method: 'POST', pathname: '/file/edge' } }
+      )
+      expect(actionResponse.status()).toBe(500) // TODO: 413?
+      expect(
+        await actionResponse.request().headerValue('content-type')
+      ).toStartWith('text/plain')
+
+      expect(await browser.elementByCss('#error').text()).toBe(
+        'Something went wrong!'
+      )
+
+      if (!isNextDeploy) {
+        await retry(() => {
+          expect(logs).toContainEqual(
+            expect.stringContaining('Error: Body exceeded 2mb limit')
+          )
+          expect(logs).toContainEqual(
+            expect.stringContaining(
+              'To configure the body size limit for Server Actions, see'
+            )
+          )
+        })
+        expect(logs).not.toContainEqual(expect.stringMatching(/^size = /))
+      }
+    })
+  })
+
   describe('should respect the size set in serverActions.bodySizeLimit for multipart fetch actions', () => {
     beforeEach(async () => {
       await next.start()
@@ -231,6 +294,94 @@ describe('app-dir action size limit invalid config', () => {
       ).toStartWith('multipart/form-data')
 
       // The error should have been returned to the client and thrown, triggering the nearest error boundary.
+      expect(await browser.elementByCss('#error').text()).toBe(
+        'Something went wrong!'
+      )
+
+      if (!isNextDeploy) {
+        await retry(() => {
+          expect(logs).toContainEqual(
+            expect.stringContaining('Error: Body exceeded 2mb limit')
+          )
+          expect(logs).toContainEqual(
+            expect.stringContaining(
+              'To configure the body size limit for Server Actions, see'
+            )
+          )
+        })
+        expect(logs).not.toContainEqual(expect.stringMatching(/^size = /))
+      }
+    })
+  })
+
+  describe('should respect the size set in serverActions.bodySizeLimit for multipart fetch actions in edge runtime', () => {
+    beforeEach(async () => {
+      await next.start()
+    })
+
+    it('should not error for requests that stay below the size limit', async () => {
+      const browser = await next.browser('/form/edge')
+      const requestTracker = createRequestTracker(browser)
+
+      const [, actionResponse] = await requestTracker.captureResponse(
+        () => browser.elementByCss('#size-1mb').click(),
+        { request: { method: 'POST', pathname: '/form/edge' } }
+      )
+      expect(actionResponse.status()).toBe(200)
+      expect(
+        await actionResponse.request().headerValue('content-type')
+      ).toStartWith('multipart/form-data')
+
+      if (!isNextDeploy) {
+        await retry(() =>
+          expect(logs).toContainEqual(
+            expect.stringContaining(`size = ${accountForOverhead(1)}`)
+          )
+        )
+        expect(logs).not.toContainEqual(
+          expect.stringContaining('Error: Body exceeded 2mb limit')
+        )
+      }
+    })
+
+    it('should not error for requests that are at the size limit', async () => {
+      const browser = await next.browser('/form/edge')
+      const requestTracker = createRequestTracker(browser)
+
+      const [, actionResponse] = await requestTracker.captureResponse(
+        () => browser.elementByCss('#size-2mb').click(),
+        { request: { method: 'POST', pathname: '/form/edge' } }
+      )
+      expect(actionResponse.status()).toBe(200)
+      expect(
+        await actionResponse.request().headerValue('content-type')
+      ).toStartWith('multipart/form-data')
+
+      if (!isNextDeploy) {
+        await retry(() =>
+          expect(logs).toContainEqual(
+            expect.stringContaining(`size = ${accountForOverhead(2)}`)
+          )
+        )
+        expect(logs).not.toContainEqual(
+          expect.stringContaining('Error: Body exceeded 2mb limit')
+        )
+      }
+    })
+
+    it('should error for requests that exceed the size limit', async () => {
+      const browser = await next.browser('/form/edge')
+      const requestTracker = createRequestTracker(browser)
+
+      const [, actionResponse] = await requestTracker.captureResponse(
+        () => browser.elementByCss('#size-3mb').click(),
+        { request: { method: 'POST', pathname: '/form/edge' } }
+      )
+      expect(actionResponse.status()).toBe(500) // TODO: 413?
+      expect(
+        await actionResponse.request().headerValue('content-type')
+      ).toStartWith('multipart/form-data')
+
       expect(await browser.elementByCss('#error').text()).toBe(
         'Something went wrong!'
       )
