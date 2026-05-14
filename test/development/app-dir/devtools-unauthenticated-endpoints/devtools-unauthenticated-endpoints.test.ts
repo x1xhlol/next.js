@@ -5,6 +5,8 @@ describe('devtools-unauthenticated-endpoints', () => {
   const { next } = nextTestSetup({
     files: __dirname,
   })
+  const existingExternalFile =
+    process.platform === 'win32' ? 'C:\\Windows\\win.ini' : '/etc/passwd'
 
   async function callMcpTool(name: string, options: { origin?: string } = {}) {
     const response = await fetch(`${next.url}/_next/mcp`, {
@@ -175,6 +177,42 @@ describe('devtools-unauthenticated-endpoints', () => {
 
     const evilOriginResponse = await fetch(
       `${next.url}/__nextjs_server_status`,
+      {
+        headers: {
+          origin: 'https://example.vercel.sh',
+        },
+      }
+    )
+    expect(evilOriginResponse).toMatchObject({
+      status: 403,
+      statusText: 'Forbidden',
+    })
+    expect(await evilOriginResponse.text()).toBe('Unauthorized')
+  })
+
+  it('turns launch-editor into an arbitrary file existence oracle', async () => {
+    const existingResponse = await fetch(
+      `${next.url}/__nextjs_launch-editor?file=${encodeURIComponent(
+        existingExternalFile
+      )}&line1=1&column1=1`
+    )
+    expect(existingResponse.status).toBe(204)
+
+    const missingResponse = await fetch(
+      `${next.url}/__nextjs_launch-editor?file=${encodeURIComponent(
+        `${next.testDir}/../definitely-missing-file-for-audit`
+      )}&line1=1&column1=1`
+    )
+    expect(missingResponse).toMatchObject({
+      status: 404,
+      statusText: 'Not Found',
+    })
+    expect(await missingResponse.text()).toBe('Not Found')
+
+    const evilOriginResponse = await fetch(
+      `${next.url}/__nextjs_launch-editor?file=${encodeURIComponent(
+        existingExternalFile
+      )}&line1=1&column1=1`,
       {
         headers: {
           origin: 'https://example.vercel.sh',
