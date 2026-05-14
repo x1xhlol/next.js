@@ -164,6 +164,15 @@ describe('custom-server-action-forward-ssrf', () => {
     })
     if (skipped) return
 
+    it('exposes action identifiers in rendered HTML', async () => {
+      const [actionId] = await getActionEntry(next, 'app/b/page.tsx')
+      const html = await next.render('/b')
+      const matches = html.match(new RegExp(actionId, 'g')) ?? []
+
+      expect(html).toContain(`$ACTION_ID_${actionId}`)
+      expect(matches.length).toBeGreaterThan(1)
+    })
+
     it('does not forward the same request off-origin', async () => {
       probeRequests.length = 0
 
