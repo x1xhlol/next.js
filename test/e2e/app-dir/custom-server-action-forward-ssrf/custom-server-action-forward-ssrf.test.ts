@@ -49,16 +49,26 @@ async function getActionEntry(
 async function sendExploitRequest(
   next: NextInstance,
   actionId: string,
-  probePort: number
+  probePort: number,
+  options: {
+    forwardedHost?: string
+    includeOrigin?: boolean
+    origin?: string
+  } = {}
 ) {
+  const forwardedHost = options.forwardedHost ?? `127.0.0.1:${probePort}`
   const response = await fetch(`${next.url}/a`, {
     method: 'POST',
     headers: {
       'content-type': 'text/plain;charset=UTF-8',
       'next-action': actionId,
-      origin: `http://127.0.0.1:${probePort}`,
+      ...(options.includeOrigin === false
+        ? {}
+        : {
+            origin: options.origin ?? `http://${forwardedHost}`,
+          }),
       'x-attack-marker': 'custom-server-forward-ssrf',
-      'x-forwarded-host': `127.0.0.1:${probePort}`,
+      'x-forwarded-host': forwardedHost,
       'x-forwarded-proto': 'http',
     },
     body: 'probe-body',
@@ -153,6 +163,41 @@ describe('custom-server-action-forward-ssrf', () => {
         status: 200,
         body: '{}',
       })
+    })
+
+    it('still forwards without an origin header', async () => {
+      probeRequests.length = 0
+
+      const [actionId] = await getActionEntry(next, 'app/b/page.tsx')
+
+      const response = await sendExploitRequest(next, actionId, probePort, {
+        includeOrigin: false,
+      })
+
+      await retry(async () => {
+        expect(probeRequests.length).toBe(1)
+      })
+
+      expect(probeRequests[0].headers.origin).toBeUndefined()
+      expect(probeRequests[0].headers.host).toBe(`127.0.0.1:${probePort}`)
+      expect(response).toEqual({
+        status: 200,
+        body: '{}',
+      })
+    })
+
+    it('blocks the request when origin does not match the forwarded host', async () => {
+      probeRequests.length = 0
+
+      const [actionId] = await getActionEntry(next, 'app/b/page.tsx')
+
+      const response = await sendExploitRequest(next, actionId, probePort, {
+        origin: 'http://127.0.0.1:1',
+      })
+
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      expect(probeRequests).toHaveLength(0)
+      expect(response.status).toBe(500)
     })
   })
 
