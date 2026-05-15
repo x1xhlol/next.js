@@ -487,11 +487,14 @@ describe('audit-middleware-bypass', () => {
     buttonId:
       | 'trigger-action'
       | 'trigger-redirect-action'
-      | 'trigger-revalidating-redirect-action' = 'trigger-action'
+      | 'trigger-revalidating-redirect-action'
+      | 'trigger-secondary-action' = 'trigger-action',
+    startPath = '/'
   ): Promise<CapturedActionRequest> {
     let capturedActionRequest: CapturedActionRequest | undefined
+    const expectedPathname = new URL(startPath, next.url).pathname
 
-    const browser = await next.browser('/', {
+    const browser = await next.browser(startPath, {
       beforePageLoad(page) {
         page.on('request', (request) => {
           const headers = request.headers()
@@ -499,7 +502,7 @@ describe('audit-middleware-bypass', () => {
           if (
             request.method() === 'POST' &&
             headers['next-action'] &&
-            new URL(request.url()).pathname === '/'
+            new URL(request.url()).pathname === expectedPathname
           ) {
             capturedActionRequest = {
               headers,
@@ -908,6 +911,38 @@ describe('audit-middleware-bypass', () => {
 
       expect(bypassRes.status).toBe(200)
       expect(bypassText).toContain('TOP SECRET PAYLOAD')
+    })
+
+    it('forwards cross-worker Server Action requests to the forged host if private origin is absent', async () => {
+      const secondaryActionRequest = await captureActionRequest(
+        'trigger-secondary-action',
+        '/secondary'
+      )
+      const nextHost = new URL(next.url).host
+      const evilHost = new URL(evilOrigin).host
+
+      await next.fetch('/api/clear-private-origin')
+
+      evilRequests.length = 0
+      evilRequestHeaders.length = 0
+
+      const res = await issueRequestWithHostHeader({
+        hostHeader: nextHost,
+        forwardedHostHeader: evilHost,
+        originHostHeader: evilHost,
+        actionRequest: secondaryActionRequest,
+      })
+
+      expect(res.statusCode).toBe(200)
+      expect(evilRequests).toContain('/secondary')
+      expect(
+        evilRequestHeaders.some(
+          (headers) =>
+            headers.cookie?.includes('auth=1') &&
+            headers['next-action'] ===
+              secondaryActionRequest.headers['next-action']
+        )
+      ).toBe(true)
     })
   }
 })
