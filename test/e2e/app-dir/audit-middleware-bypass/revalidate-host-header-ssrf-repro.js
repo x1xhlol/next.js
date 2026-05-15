@@ -12,6 +12,7 @@ const {
 
 async function main() {
   let captured
+  const previewModeId = process.env.AUDIT_PREVIEW_MODE_ID || 'preview-token'
 
   const httpsServer = https.createServer(
     {
@@ -60,7 +61,7 @@ async function main() {
         apiRes.status(200).json({ ok: true })
       },
       {
-        previewModeId: 'preview-token',
+        previewModeId,
         previewModeEncryptionKey: '0123456789abcdef0123456789abcdef',
         previewModeSigningKey: '0123456789abcdef0123456789abcdef',
         trustHostHeader: true,

