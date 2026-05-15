@@ -42,17 +42,20 @@ describe('audit-middleware-bypass', () => {
   let evilOrigin: string
   let evilRequests: string[]
   let evilUpgradeRequests: string[]
+  let evilRequestHeaders: http.IncomingHttpHeaders[]
 
   beforeAll(async () => {
     const evilHostname =
       new URL(next.url).hostname === '127.0.0.1' ? 'localhost' : '127.0.0.1'
     evilRequests = []
     evilUpgradeRequests = []
+    evilRequestHeaders = []
 
     evilServer = http.createServer((req, res) => {
       const requestUrl = new URL(req.url || '/', 'http://n')
 
       evilRequests.push(requestUrl.pathname)
+      evilRequestHeaders.push(req.headers)
 
       if (requestUrl.pathname === '/rebind-image.png') {
         res.writeHead(200, { 'content-type': 'image/png' })
@@ -236,6 +239,34 @@ describe('audit-middleware-bypass', () => {
       for (const content of chunkContents) {
         expect(content).not.toContain(auditSecret)
       }
+    })
+
+    it('does not expose the preview bypass token in public client assets or HTML', async () => {
+      const prerenderManifest = await next.readJSON(
+        '.next/prerender-manifest.json'
+      )
+      const previewModeId = prerenderManifest.preview.previewModeId as string
+
+      const clientChunks = await listClientChunks(
+        join(next.testDir, next.distDir)
+      )
+      const chunkContents = await Promise.all(
+        clientChunks
+          .filter((file) => file.endsWith('.js') || file.endsWith('.js.map'))
+          .map((file) =>
+            fsPromises.readFile(join(next.testDir, next.distDir, file), 'utf8')
+          )
+      )
+
+      for (const content of chunkContents) {
+        expect(content).not.toContain(previewModeId)
+      }
+
+      const homeHtml = await (await next.fetch('/')).text()
+      const draftHtml = await (await next.fetch('/draft-only')).text()
+
+      expect(homeHtml).not.toContain(previewModeId)
+      expect(draftHtml).not.toContain(previewModeId)
     })
 
     it('does not proxy absolute-form websocket upgrade requests to attacker targets', async () => {
@@ -584,9 +615,13 @@ describe('audit-middleware-bypass', () => {
 
   async function issueRequestWithHostHeader({
     hostHeader,
+    forwardedHostHeader,
+    originHostHeader,
     actionRequest,
   }: {
     hostHeader: string
+    forwardedHostHeader?: string
+    originHostHeader?: string
     actionRequest: CapturedActionRequest
   }) {
     const nextUrl = new URL(next.url)
@@ -604,11 +639,14 @@ describe('audit-middleware-bypass', () => {
           method: 'POST',
           headers: {
             host: hostHeader,
-            origin: `http://${hostHeader}`,
+            origin: `http://${originHostHeader || hostHeader}`,
             cookie: 'auth=1',
             'next-action': actionRequest.headers['next-action'],
             'content-type': actionRequest.headers['content-type'],
             accept: actionRequest.headers.accept,
+            ...(forwardedHostHeader
+              ? { 'x-forwarded-host': forwardedHostHeader }
+              : {}),
             ...(actionRequest.headers['next-url']
               ? { 'next-url': actionRequest.headers['next-url'] }
               : {}),
@@ -796,5 +834,31 @@ describe('audit-middleware-bypass', () => {
 
     expect(res.statusCode).toBeGreaterThanOrEqual(300)
     expect(evilRequests).not.toContain('/post-action-landing')
+  })
+
+  it('fetches a forged x-forwarded-host during redirect follow-up if private origin is absent', async () => {
+    const redirectActionRequest = await captureActionRequest(
+      'trigger-redirect-action'
+    )
+    const nextHost = new URL(next.url).host
+    const evilHost = new URL(evilOrigin).host
+
+    await next.fetch('/api/clear-private-origin')
+
+    evilRequests.length = 0
+    evilRequestHeaders.length = 0
+
+    const res = await issueRequestWithHostHeader({
+      hostHeader: nextHost,
+      forwardedHostHeader: evilHost,
+      originHostHeader: evilHost,
+      actionRequest: redirectActionRequest,
+    })
+
+    expect(res.statusCode).toBeGreaterThanOrEqual(300)
+    expect(evilRequests).toContain('/post-action-landing')
+    expect(
+      evilRequestHeaders.some((headers) => headers.cookie?.includes('auth=1'))
+    ).toBe(true)
   })
 })
