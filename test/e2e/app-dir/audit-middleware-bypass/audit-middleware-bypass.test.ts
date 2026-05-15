@@ -1,8 +1,10 @@
 import fs from 'fs'
+import fsPromises from 'node:fs/promises'
 import http from 'http'
 import type { AddressInfo } from 'net'
 import { nextTestSetup } from 'e2e-utils'
-import { retry } from 'next-test-utils'
+import { join } from 'node:path'
+import { listClientChunks, retry } from 'next-test-utils'
 
 type CapturedActionRequest = {
   headers: Record<string, string>
@@ -10,8 +12,12 @@ type CapturedActionRequest = {
 }
 
 describe('audit-middleware-bypass', () => {
-  const { next } = nextTestSetup({
+  const auditSecret = `audit-secret-${Date.now()}`
+  const { next, isNextStart } = nextTestSetup({
     files: __dirname,
+    env: {
+      AUDIT_SECRET: auditSecret,
+    },
   })
 
   let evilServer: http.Server
@@ -161,6 +167,35 @@ describe('audit-middleware-bypass', () => {
       expect(text).not.toContain('TOP SECRET PAYLOAD')
     }
   )
+
+  it('does not expose a server-only env value in the rendered response', async () => {
+    const res = await next.fetch('/server-only')
+    const text = await res.text()
+
+    expect(res.status).toBe(200)
+    expect(text).not.toContain(auditSecret)
+    expect(text).toContain('server-only page')
+  })
+
+  if (isNextStart) {
+    it('does not include a server-only env value in client chunks or sourcemaps', async () => {
+      const clientChunks = await listClientChunks(
+        join(next.testDir, next.distDir)
+      )
+      const chunkContents = await Promise.all(
+        clientChunks
+          .filter((file) => file.endsWith('.js') || file.endsWith('.js.map'))
+          .map((file) =>
+            fsPromises.readFile(join(next.testDir, next.distDir, file), 'utf8')
+          )
+      )
+
+      expect(chunkContents.length).toBeGreaterThan(0)
+      for (const content of chunkContents) {
+        expect(content).not.toContain(auditSecret)
+      }
+    })
+  }
 
   async function captureActionRequest(
     buttonId: 'trigger-action' | 'trigger-redirect-action' = 'trigger-action'
