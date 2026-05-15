@@ -116,13 +116,44 @@ describe('audit-middleware-bypass', () => {
   })
 
   it.each([
-    '/protected',
-    '/protected.segments/_tree.segment.rsc',
-    '/protected.segments/_full.segment.rsc',
+    {
+      name: 'plain protected route',
+      path: '/protected',
+      headers: undefined,
+    },
+    {
+      name: 'rsc suffix route',
+      path: '/protected.rsc',
+      headers: undefined,
+    },
+    {
+      name: 'segment prefetch tree route',
+      path: '/protected.segments/_tree.segment.rsc',
+      headers: undefined,
+    },
+    {
+      name: 'segment prefetch full route',
+      path: '/protected.segments/_full.segment.rsc',
+      headers: undefined,
+    },
+    {
+      name: 'header-only rsc request',
+      path: '/protected',
+      headers: { rsc: '1' },
+    },
+    {
+      name: 'header-only segment prefetch request',
+      path: '/protected',
+      headers: {
+        rsc: '1',
+        'next-router-prefetch': '1',
+        'next-router-segment-prefetch': '/_tree',
+      },
+    },
   ])(
-    'does not bypass middleware through alternate App Router transport path %s',
-    async (path) => {
-      const res = await next.fetch(path)
+    'does not bypass middleware through alternate App Router transport: $name',
+    async ({ path, headers }) => {
+      const res = await next.fetch(path, { headers })
       const text = await res.text()
 
       expect(res.status).toBe(401)
