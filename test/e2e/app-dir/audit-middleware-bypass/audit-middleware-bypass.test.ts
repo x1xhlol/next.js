@@ -18,6 +18,7 @@ describe('audit-middleware-bypass', () => {
     files: __dirname,
     env: {
       AUDIT_SECRET: auditSecret,
+      NODE_OPTIONS: `--require ${join(__dirname, 'rebind-precheck-patch.cjs')}`,
     },
   })
 
@@ -36,6 +37,17 @@ describe('audit-middleware-bypass', () => {
       const requestUrl = new URL(req.url || '/', 'http://n')
 
       evilRequests.push(requestUrl.pathname)
+
+      if (requestUrl.pathname === '/rebind-image.png') {
+        res.writeHead(200, { 'content-type': 'image/png' })
+        res.end(
+          Buffer.from(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO9W3KsAAAAASUVORK5CYII=',
+            'base64'
+          )
+        )
+        return
+      }
 
       if (requestUrl.pathname !== '/attack') {
         res.writeHead(200, { 'content-type': 'text/plain' })
@@ -263,6 +275,26 @@ describe('audit-middleware-bypass', () => {
     expect(res.status).toBe(401)
     expect(text).toContain('blocked dynamic admin')
     expect(text).not.toContain('DYNAMIC TOP SECRET PAYLOAD')
+  })
+
+  it('fetches a loopback image when the precheck DNS answer is rebound before fetch', async () => {
+    evilRequests.length = 0
+    const evilPort = (evilServer.address() as AddressInfo).port
+
+    const res = await next.fetch(
+      `/_next/image?url=${encodeURIComponent(`http://localhost:${evilPort}/rebind-image.png`)}&w=64&q=75`,
+      {
+        headers: {
+          accept: 'image/png',
+        },
+      }
+    )
+    const body = Buffer.from(await res.arrayBuffer())
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toMatch(/^image\//)
+    expect(body.byteLength).toBeGreaterThan(0)
+    expect(evilRequests).toContain('/rebind-image.png')
   })
 
   async function captureActionRequest(
