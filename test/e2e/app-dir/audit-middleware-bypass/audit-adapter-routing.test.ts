@@ -83,7 +83,9 @@ module.exports = nextConfig
     })
   })
 
-  async function captureActionRequest(): Promise<CapturedActionRequest> {
+  async function captureActionRequest(
+    buttonId: string
+  ): Promise<CapturedActionRequest> {
     let capturedActionRequest: CapturedActionRequest | undefined
 
     const browser = await next.browser('/', {
@@ -105,9 +107,7 @@ module.exports = nextConfig
       },
     })
 
-    await browser
-      .elementById('trigger-public-revalidating-redirect-action')
-      .click()
+    await browser.elementById(buttonId).click()
 
     await retry(async () => {
       expect(capturedActionRequest).toBeDefined()
@@ -121,10 +121,16 @@ module.exports = nextConfig
   }
 
   async function issueForgedActionRequest(
-    actionRequest: CapturedActionRequest
+    actionRequest: CapturedActionRequest,
+    {
+      forwardedHostHeader,
+      originHostHeader,
+    }: {
+      forwardedHostHeader?: string
+      originHostHeader?: string
+    } = {}
   ) {
     const nextUrl = new URL(next.url)
-    const evilHost = new URL(evilOrigin).host
 
     return await new Promise<{
       statusCode: number
@@ -139,8 +145,12 @@ module.exports = nextConfig
           method: 'POST',
           headers: {
             host: nextUrl.host,
-            origin: `http://${evilHost}`,
-            'x-forwarded-host': evilHost,
+            ...(originHostHeader
+              ? { origin: `http://${originHostHeader}` }
+              : {}),
+            ...(forwardedHostHeader
+              ? { 'x-forwarded-host': forwardedHostHeader }
+              : {}),
             'next-action': actionRequest.headers['next-action'],
             'content-type': actionRequest.headers['content-type'],
             accept: actionRequest.headers.accept,
@@ -180,16 +190,22 @@ module.exports = nextConfig
     expect(protectedBaselineText).toContain('blocked by middleware')
     expect(protectedBaselineText).not.toContain('TOP SECRET PAYLOAD')
 
-    const actionRequest = await captureActionRequest()
+    const actionRequest = await captureActionRequest(
+      'trigger-public-revalidating-redirect-action'
+    )
     const prerenderManifest = await next.readJSON(
       '.next/prerender-manifest.json'
     )
     const previewModeId = prerenderManifest.preview.previewModeId as string
+    const evilHost = new URL(evilOrigin).host
 
     evilRequests.length = 0
     evilRequestHeaders.length = 0
 
-    const actionRes = await issueForgedActionRequest(actionRequest)
+    const actionRes = await issueForgedActionRequest(actionRequest, {
+      forwardedHostHeader: evilHost,
+      originHostHeader: evilHost,
+    })
     const leakedToken = evilRequestHeaders
       .map((headers) => headers['x-next-revalidate-tag-token'])
       .find((value): value is string => typeof value === 'string')
@@ -228,5 +244,114 @@ module.exports = nextConfig
 
     expect(protectedBypassRes.status).toBe(200)
     expect(protectedBypassText).toContain('TOP SECRET PAYLOAD')
+  })
+
+  it('does not leak the preview token when the public action only redirects', async () => {
+    const actionRequest = await captureActionRequest(
+      'trigger-public-redirect-only-action'
+    )
+    const prerenderManifest = await next.readJSON(
+      '.next/prerender-manifest.json'
+    )
+    const previewModeId = prerenderManifest.preview.previewModeId as string
+    const evilHost = new URL(evilOrigin).host
+
+    evilRequests.length = 0
+    evilRequestHeaders.length = 0
+
+    const actionRes = await issueForgedActionRequest(actionRequest, {
+      forwardedHostHeader: evilHost,
+      originHostHeader: evilHost,
+    })
+
+    expect(actionRes.statusCode).toBeGreaterThanOrEqual(200)
+    expect(
+      evilRequests.some((requestPath) =>
+        requestPath.startsWith('/post-action-landing')
+      )
+    ).toBe(true)
+    expect(
+      evilRequestHeaders.some(
+        (headers) => headers['x-next-revalidate-tag-token'] === previewModeId
+      )
+    ).toBe(false)
+  })
+
+  it('does not leak the preview token when the public action only revalidates', async () => {
+    const actionRequest = await captureActionRequest(
+      'trigger-public-revalidate-only-action'
+    )
+    const prerenderManifest = await next.readJSON(
+      '.next/prerender-manifest.json'
+    )
+    const previewModeId = prerenderManifest.preview.previewModeId as string
+    const evilHost = new URL(evilOrigin).host
+
+    evilRequests.length = 0
+    evilRequestHeaders.length = 0
+
+    const actionRes = await issueForgedActionRequest(actionRequest, {
+      forwardedHostHeader: evilHost,
+      originHostHeader: evilHost,
+    })
+
+    expect(actionRes.statusCode).toBeGreaterThanOrEqual(200)
+    expect(evilRequests).toHaveLength(0)
+    expect(
+      evilRequestHeaders.some(
+        (headers) => headers['x-next-revalidate-tag-token'] === previewModeId
+      )
+    ).toBe(false)
+  })
+
+  it('does not leak the preview token when the forged origin does not match the forged forwarded host', async () => {
+    const actionRequest = await captureActionRequest(
+      'trigger-public-revalidating-redirect-action'
+    )
+    const prerenderManifest = await next.readJSON(
+      '.next/prerender-manifest.json'
+    )
+    const previewModeId = prerenderManifest.preview.previewModeId as string
+    const evilHost = new URL(evilOrigin).host
+
+    evilRequests.length = 0
+    evilRequestHeaders.length = 0
+
+    const actionRes = await issueForgedActionRequest(actionRequest, {
+      forwardedHostHeader: evilHost,
+      originHostHeader: 'mismatch.invalid',
+    })
+
+    expect(actionRes.statusCode).toBeGreaterThanOrEqual(400)
+    expect(
+      evilRequestHeaders.some(
+        (headers) => headers['x-next-revalidate-tag-token'] === previewModeId
+      )
+    ).toBe(false)
+  })
+
+  it('does not leak the preview token when x-forwarded-host is omitted', async () => {
+    const actionRequest = await captureActionRequest(
+      'trigger-public-revalidating-redirect-action'
+    )
+    const prerenderManifest = await next.readJSON(
+      '.next/prerender-manifest.json'
+    )
+    const previewModeId = prerenderManifest.preview.previewModeId as string
+    const evilHost = new URL(evilOrigin).host
+
+    evilRequests.length = 0
+    evilRequestHeaders.length = 0
+
+    const actionRes = await issueForgedActionRequest(actionRequest, {
+      originHostHeader: evilHost,
+    })
+
+    expect(actionRes.statusCode).toBeGreaterThanOrEqual(400)
+    expect(
+      evilRequestHeaders.some(
+        (headers) => headers['x-next-revalidate-tag-token'] === previewModeId
+      )
+    ).toBe(false)
   })
 })

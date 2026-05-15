@@ -46,3 +46,12 @@ export async function publicRevalidatingRedirectAction() {
   revalidatePath('/protected')
   redirect('/post-action-landing')
 }
+
+export async function publicRedirectOnlyAction() {
+  redirect('/post-action-landing')
+}
+
+export async function publicRevalidateOnlyAction() {
+  revalidatePath('/protected')
+  return 'ok'
+}

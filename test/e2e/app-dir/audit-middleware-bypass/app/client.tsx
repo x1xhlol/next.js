@@ -3,6 +3,8 @@
 import { useTransition } from 'react'
 import {
   publicRevalidatingRedirectAction,
+  publicRedirectOnlyAction,
+  publicRevalidateOnlyAction,
   protectedAction,
   redirectingAction,
   revalidatingRedirectAction,
@@ -52,6 +54,26 @@ export function Client() {
         }}
       >
         public revalidating redirect action
+      </button>
+      <button
+        id="trigger-public-redirect-only-action"
+        onClick={() => {
+          startTransition(async () => {
+            await publicRedirectOnlyAction()
+          })
+        }}
+      >
+        public redirect only action
+      </button>
+      <button
+        id="trigger-public-revalidate-only-action"
+        onClick={() => {
+          startTransition(async () => {
+            await publicRevalidateOnlyAction()
+          })
+        }}
+      >
+        public revalidate only action
       </button>
     </>
   )
