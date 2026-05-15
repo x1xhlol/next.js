@@ -1,4 +1,5 @@
 import fs from 'fs'
+import { execFile } from 'node:child_process'
 import fsPromises from 'node:fs/promises'
 import http from 'http'
 import type { AddressInfo } from 'net'
@@ -295,6 +296,46 @@ describe('audit-middleware-bypass', () => {
     expect(res.headers.get('content-type')).toMatch(/^image\//)
     expect(body.byteLength).toBeGreaterThan(0)
     expect(evilRequests).toContain('/rebind-image.png')
+  })
+
+  it('forwards revalidation requests to the untrusted Host header in trustHostHeader fallback mode', async () => {
+    const repro = await new Promise<{
+      statusCode: number
+      body: string
+      captured: {
+        method: string
+        url: string
+        headers: http.IncomingHttpHeaders
+      }
+    }>((resolve, reject) => {
+      execFile(
+        'node',
+        [join(__dirname, 'revalidate-host-header-ssrf-repro.js')],
+        {
+          cwd: process.cwd(),
+          env: {
+            ...process.env,
+            NODE_TLS_REJECT_UNAUTHORIZED: '0',
+          },
+        },
+        (error, stdout, stderr) => {
+          if (error) {
+            reject(new Error(stderr || error.message))
+            return
+          }
+
+          resolve(JSON.parse(stdout))
+        }
+      )
+    })
+
+    expect(repro.statusCode).toBe(200)
+    expect(repro.captured.method).toBe('HEAD')
+    expect(repro.captured.url).toBe('/')
+    expect(repro.captured.headers['x-prerender-revalidate']).toBe(
+      'preview-token'
+    )
+    expect(repro.captured.headers.cookie).toBe('session=stealme')
   })
 
   async function captureActionRequest(
