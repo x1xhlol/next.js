@@ -80,6 +80,42 @@ async function sendExploitRequest(
   }
 }
 
+async function sendRedirectExploitRequest(
+  next: NextInstance,
+  actionId: string,
+  probePort: number,
+  options: {
+    forwardedHost?: string
+    includeOrigin?: boolean
+    origin?: string
+  } = {}
+) {
+  const forwardedHost = options.forwardedHost ?? `127.0.0.1:${probePort}`
+  const response = await fetch(`${next.url}/a`, {
+    method: 'POST',
+    headers: {
+      accept: 'text/x-component',
+      'content-type': 'text/plain;charset=UTF-8',
+      'next-action': actionId,
+      ...(options.includeOrigin === false
+        ? {}
+        : {
+            origin: options.origin ?? `http://${forwardedHost}`,
+          }),
+      'x-attack-marker': 'custom-server-redirect-ssrf',
+      'x-forwarded-host': forwardedHost,
+      'x-forwarded-proto': 'http',
+    },
+    body: '[]',
+  })
+
+  return {
+    status: response.status,
+    headers: Object.fromEntries(response.headers.entries()),
+    body: await response.text(),
+  }
+}
+
 describe('custom-server-action-forward-ssrf', () => {
   let probeServer: http.Server
   let probePort: number
@@ -99,6 +135,12 @@ describe('custom-server-action-forward-ssrf', () => {
           headers: req.headers,
           body: Buffer.concat(chunks).toString('utf8'),
         })
+        if (req.method === 'GET' && req.url?.startsWith('/redirect-target')) {
+          res.writeHead(200, { 'content-type': 'text/x-component' })
+          res.end('probe-rsc-marker')
+          return
+        }
+
         res.writeHead(200, { 'content-type': 'text/plain' })
         res.end('probe-hit')
       })
@@ -199,6 +241,44 @@ describe('custom-server-action-forward-ssrf', () => {
       expect(probeRequests).toHaveLength(0)
       expect(response.status).toBe(500)
     })
+
+    it('follows fetch-action redirects through the attacker-controlled host', async () => {
+      probeRequests.length = 0
+
+      const [actionId, action] = await getActionEntry(next, 'app/a/page.tsx')
+
+      expect(Object.keys(action.workers)).toContain('app/a/page')
+
+      const response = await sendRedirectExploitRequest(
+        next,
+        actionId,
+        probePort,
+        {
+          includeOrigin: false,
+        }
+      )
+
+      await retry(async () => {
+        expect(probeRequests).toHaveLength(1)
+      })
+
+      expect(probeRequests[0]).toMatchObject({
+        method: 'GET',
+        body: '',
+      })
+      expect(probeRequests[0].url).toContain('/redirect-target')
+      expect(probeRequests[0].headers.host).toBe(`127.0.0.1:${probePort}`)
+      expect(probeRequests[0].headers.rsc).toBe('1')
+      expect(probeRequests[0].headers['next-action']).toBeUndefined()
+      expect(probeRequests[0].headers['x-attack-marker']).toBe(
+        'custom-server-redirect-ssrf'
+      )
+
+      expect(response.status).toBe(303)
+      expect(response.headers['x-action-redirect']).toContain(
+        '/redirect-target'
+      )
+    })
   })
 
   describe('standard next startup path', () => {
@@ -230,6 +310,28 @@ describe('custom-server-action-forward-ssrf', () => {
 
       await new Promise((resolve) => setTimeout(resolve, 500))
       expect(probeRequests).toHaveLength(0)
+    })
+
+    it('does not follow the redirect through the attacker-controlled host', async () => {
+      probeRequests.length = 0
+
+      const [actionId] = await getActionEntry(next, 'app/a/page.tsx')
+
+      const response = await sendRedirectExploitRequest(
+        next,
+        actionId,
+        probePort,
+        {
+          includeOrigin: false,
+        }
+      )
+
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      expect(probeRequests).toHaveLength(0)
+      expect(response.status).toBe(303)
+      expect(response.headers['x-action-redirect']).toContain(
+        '/redirect-target'
+      )
     })
   })
 })

@@ -1,6 +1,9 @@
+import { redirect } from 'next/navigation'
+
 export default function PageA() {
   async function action() {
     'use server'
+    redirect('/redirect-target')
   }
 
   return (
