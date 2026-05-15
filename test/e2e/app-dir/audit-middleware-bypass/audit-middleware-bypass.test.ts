@@ -2,6 +2,7 @@ import fs from 'fs'
 import fsPromises from 'node:fs/promises'
 import http from 'http'
 import type { AddressInfo } from 'net'
+import net from 'net'
 import { nextTestSetup } from 'e2e-utils'
 import { join } from 'node:path'
 import { listClientChunks, retry } from 'next-test-utils'
@@ -23,11 +24,13 @@ describe('audit-middleware-bypass', () => {
   let evilServer: http.Server
   let evilOrigin: string
   let evilRequests: string[]
+  let evilUpgradeRequests: string[]
 
   beforeAll(async () => {
     const evilHostname =
       new URL(next.url).hostname === '127.0.0.1' ? 'localhost' : '127.0.0.1'
     evilRequests = []
+    evilUpgradeRequests = []
 
     evilServer = http.createServer((req, res) => {
       const requestUrl = new URL(req.url || '/', 'http://n')
@@ -100,6 +103,17 @@ describe('audit-middleware-bypass', () => {
     </script>
   </body>
 </html>`)
+    })
+
+    evilServer.on('upgrade', (req, socket) => {
+      evilUpgradeRequests.push(req.url || '')
+      socket.write(
+        'HTTP/1.1 101 Switching Protocols\r\n' +
+          'Connection: Upgrade\r\n' +
+          'Upgrade: websocket\r\n' +
+          '\r\n'
+      )
+      socket.end()
     })
 
     await new Promise<void>((resolve) => {
@@ -195,7 +209,61 @@ describe('audit-middleware-bypass', () => {
         expect(content).not.toContain(auditSecret)
       }
     })
+
+    it('does not proxy absolute-form websocket upgrade requests to attacker targets', async () => {
+      evilUpgradeRequests.length = 0
+
+      const nextUrl = new URL(next.url)
+      const evilPort = (evilServer.address() as AddressInfo).port
+
+      await new Promise<void>((resolve, reject) => {
+        const socket = net.createConnection(
+          {
+            host: nextUrl.hostname,
+            port: Number(nextUrl.port),
+          },
+          () => {
+            socket.write(
+              [
+                `GET http://127.0.0.1:${evilPort}/ws-attack HTTP/1.1`,
+                'Host: victim.example',
+                'Connection: Upgrade',
+                'Upgrade: websocket',
+                'Sec-WebSocket-Version: 13',
+                'Sec-WebSocket-Key: dGVzdC10ZXN0LXRlc3Q=',
+                '',
+                '',
+              ].join('\r\n')
+            )
+          }
+        )
+
+        socket.once('error', reject)
+        socket.once('close', () => resolve())
+      })
+
+      expect(evilUpgradeRequests).not.toContain('/ws-attack')
+    })
   }
+
+  it('does not allow nxtP query injection to alter a dynamic route param', async () => {
+    const res = await next.fetch('/dynamic/public?nxtPslug=admin')
+    const text = await res.text()
+
+    expect(res.status).toBe(200)
+    expect(text).toContain('dynamic public payload:')
+    expect(text).toContain('public')
+    expect(text).not.toContain('DYNAMIC TOP SECRET PAYLOAD')
+  })
+
+  it('still blocks the real protected dynamic pathname', async () => {
+    const res = await next.fetch('/dynamic/admin')
+    const text = await res.text()
+
+    expect(res.status).toBe(401)
+    expect(text).toContain('blocked dynamic admin')
+    expect(text).not.toContain('DYNAMIC TOP SECRET PAYLOAD')
+  })
 
   async function captureActionRequest(
     buttonId: 'trigger-action' | 'trigger-redirect-action' = 'trigger-action'

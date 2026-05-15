@@ -13,5 +13,9 @@ export function proxy(request: Request) {
     return new NextResponse('blocked by middleware', { status: 401 })
   }
 
+  if (url.pathname === '/dynamic/admin') {
+    return new NextResponse('blocked dynamic admin', { status: 401 })
+  }
+
   return NextResponse.next()
 }
