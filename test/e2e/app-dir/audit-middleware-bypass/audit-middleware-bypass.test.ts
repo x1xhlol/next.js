@@ -68,6 +68,17 @@ describe('audit-middleware-bypass', () => {
         return
       }
 
+      if (requestUrl.pathname === '/rebind-fake-image.png') {
+        res.writeHead(200, { 'content-type': 'image/png' })
+        res.end(
+          Buffer.concat([
+            Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+            Buffer.from('FAKE-IMAGE-SECRET'),
+          ])
+        )
+        return
+      }
+
       if (requestUrl.pathname !== '/attack') {
         res.writeHead(200, { 'content-type': 'text/plain' })
         res.end('evil server')
@@ -410,6 +421,26 @@ describe('audit-middleware-bypass', () => {
     expect(res.headers.get('content-type')).toMatch(/^image\//)
     expect(body.byteLength).toBeGreaterThan(0)
     expect(evilRequests).toContain('/rebind-image.png')
+  })
+
+  it('reflects fake image bytes after a rebound fetch if the upstream payload only mimics PNG magic bytes', async () => {
+    evilRequests.length = 0
+    const evilPort = (evilServer.address() as AddressInfo).port
+
+    const res = await next.fetch(
+      `/_next/image?url=${encodeURIComponent(`http://localhost:${evilPort}/rebind-fake-image.png`)}&w=64&q=75`,
+      {
+        headers: {
+          accept: 'image/png',
+        },
+      }
+    )
+    const body = Buffer.from(await res.arrayBuffer())
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('image/png')
+    expect(body.includes(Buffer.from('FAKE-IMAGE-SECRET'))).toBe(true)
+    expect(evilRequests).toContain('/rebind-fake-image.png')
   })
 
   it('forwards revalidation requests to the untrusted Host header in trustHostHeader fallback mode', async () => {
