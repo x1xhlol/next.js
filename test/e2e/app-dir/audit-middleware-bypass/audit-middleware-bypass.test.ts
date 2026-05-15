@@ -13,6 +13,11 @@ type CapturedActionRequest = {
   postData: string
 }
 
+type CapturedRscRequest = {
+  path: string
+  headers: Record<string, string>
+}
+
 describe('audit-middleware-bypass', () => {
   const auditSecret = `audit-secret-${Date.now()}`
   const { next, isNextStart } = nextTestSetup({
@@ -257,6 +262,36 @@ describe('audit-middleware-bypass', () => {
 
       expect(evilUpgradeRequests).not.toContain('/ws-attack')
     })
+
+    it('does not reuse cached RSC payloads across next-url interception variants', async () => {
+      const interceptedRequest = await captureRscRequest({
+        startPath: '/interception/feed',
+        clickTarget: 'intercepted-photo-link',
+        expectedElementId: 'intercepted-photo-page',
+      })
+      const normalRequest = await captureRscRequest({
+        startPath: '/',
+        clickTarget: 'direct-photo-link',
+        expectedElementId: 'normal-photo-page',
+      })
+
+      const interceptedRes = await next.fetch(interceptedRequest.path, {
+        headers: getRscReplayHeaders(interceptedRequest.headers),
+      })
+      const interceptedBody = await interceptedRes.text()
+
+      expect(interceptedRes.status).toBe(200)
+      expect(interceptedBody).toContain('Intercepted photo page')
+
+      const normalRes = await next.fetch(normalRequest.path, {
+        headers: getRscReplayHeaders(normalRequest.headers),
+      })
+      const normalBody = await normalRes.text()
+
+      expect(normalRes.status).toBe(200)
+      expect(normalBody).toContain('Photo page (normal, not intercepted)')
+      expect(normalBody).not.toContain('Intercepted photo page')
+    })
   }
 
   it('does not allow nxtP query injection to alter a dynamic route param', async () => {
@@ -384,6 +419,61 @@ describe('audit-middleware-bypass', () => {
     }
 
     return capturedActionRequest
+  }
+
+  function getRscReplayHeaders(headers: Record<string, string>) {
+    const replayHeaders: Record<string, string> = {}
+
+    for (const key of [
+      'accept',
+      'rsc',
+      'next-router-state-tree',
+      'next-router-prefetch',
+      'next-router-segment-prefetch',
+      'next-url',
+    ]) {
+      if (headers[key]) {
+        replayHeaders[key] = headers[key]
+      }
+    }
+
+    return replayHeaders
+  }
+
+  async function captureRscRequest({
+    startPath,
+    clickTarget,
+    expectedElementId,
+  }: {
+    startPath: string
+    clickTarget: string
+    expectedElementId: string
+  }): Promise<CapturedRscRequest> {
+    let captured: CapturedRscRequest | undefined
+
+    const browser = await next.browser(startPath, {
+      beforePageLoad(page) {
+        page.on('request', (request) => {
+          const url = new URL(request.url())
+          if (!url.searchParams.has('_rsc')) return
+          if (url.pathname !== '/interception/photo') return
+
+          captured = {
+            path: `${url.pathname}${url.search}`,
+            headers: request.headers() as Record<string, string>,
+          }
+        })
+      },
+    })
+
+    await browser.elementById(clickTarget).click()
+    await browser.waitForElementByCss(`#${expectedElementId}`)
+
+    await retry(async () => {
+      expect(captured).toBeDefined()
+    })
+
+    return captured!
   }
 
   async function issueRequestWithHostHeader({
