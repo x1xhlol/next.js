@@ -59,7 +59,13 @@ describe('audit-direct-entrypoint', () => {
     })
   })
 
-  async function captureActionRequest(): Promise<CapturedActionRequest> {
+  async function captureActionRequest({
+    buttonId,
+    withAuthCookie,
+  }: {
+    buttonId: string
+    withAuthCookie: boolean
+  }): Promise<CapturedActionRequest> {
     let capturedActionRequest: CapturedActionRequest | undefined
 
     const browser = await next.browser('/', {
@@ -81,13 +87,15 @@ describe('audit-direct-entrypoint', () => {
       },
     })
 
-    await browser.eval(`fetch('/api/set-auth', { credentials: 'include' })`)
+    if (withAuthCookie) {
+      await browser.eval(`fetch('/api/set-auth', { credentials: 'include' })`)
 
-    await retry(async () => {
-      expect(await browser.eval('document.cookie')).toContain('auth=1')
-    })
+      await retry(async () => {
+        expect(await browser.eval('document.cookie')).toContain('auth=1')
+      })
+    }
 
-    await browser.elementById('trigger-revalidating-redirect-action').click()
+    await browser.elementById(buttonId).click()
 
     await retry(async () => {
       expect(capturedActionRequest).toBeDefined()
@@ -101,7 +109,8 @@ describe('audit-direct-entrypoint', () => {
   }
 
   async function issueForgedActionRequest(
-    actionRequest: CapturedActionRequest
+    actionRequest: CapturedActionRequest,
+    cookieHeader?: string
   ) {
     const nextUrl = new URL(next.url)
     const evilHost = new URL(evilOrigin).host
@@ -121,10 +130,10 @@ describe('audit-direct-entrypoint', () => {
             host: nextUrl.host,
             origin: `http://${evilHost}`,
             'x-forwarded-host': evilHost,
-            cookie: 'auth=1',
             'next-action': actionRequest.headers['next-action'],
             'content-type': actionRequest.headers['content-type'],
             accept: actionRequest.headers.accept,
+            ...(cookieHeader ? { cookie: cookieHeader } : {}),
           },
         },
         (res) => {
@@ -147,7 +156,55 @@ describe('audit-direct-entrypoint', () => {
   }
 
   it('leaks preview bypass token and draft-only content through supported direct entrypoint invocation', async () => {
-    const actionRequest = await captureActionRequest()
+    const actionRequest = await captureActionRequest({
+      buttonId: 'trigger-revalidating-redirect-action',
+      withAuthCookie: true,
+    })
+    const prerenderManifest = await next.readJSON(
+      '.next/prerender-manifest.json'
+    )
+    const previewModeId = prerenderManifest.preview.previewModeId as string
+
+    evilRequests.length = 0
+    evilRequestHeaders.length = 0
+
+    const actionRes = await issueForgedActionRequest(actionRequest, 'auth=1')
+
+    expect(actionRes.statusCode).toBeGreaterThanOrEqual(200)
+    expect(
+      evilRequests.some((requestPath) =>
+        requestPath.startsWith('/post-action-landing')
+      )
+    ).toBe(true)
+    expect(
+      evilRequestHeaders.some(
+        (headers) => headers['x-next-revalidate-tag-token'] === previewModeId
+      )
+    ).toBe(true)
+
+    const bypassRes = await next.fetch('/draft-only', {
+      headers: {
+        cookie: `__prerender_bypass=${previewModeId}`,
+      },
+    })
+    const bypassText = await bypassRes.text()
+
+    expect(bypassRes.status).toBe(200)
+    expect(bypassText).toContain('DRAFT SECRET PAYLOAD')
+  })
+
+  it('leaks preview bypass token from a public revalidating action in the supported direct entrypoint model', async () => {
+    const baselineRes = await next.fetch('/draft-only')
+    const baselineText = await baselineRes.text()
+
+    expect(baselineRes.status).toBe(200)
+    expect(baselineText).toContain('draft mode disabled')
+    expect(baselineText).not.toContain('DRAFT SECRET PAYLOAD')
+
+    const actionRequest = await captureActionRequest({
+      buttonId: 'trigger-public-revalidating-redirect-action',
+      withAuthCookie: false,
+    })
     const prerenderManifest = await next.readJSON(
       '.next/prerender-manifest.json'
     )
@@ -166,7 +223,9 @@ describe('audit-direct-entrypoint', () => {
     ).toBe(true)
     expect(
       evilRequestHeaders.some(
-        (headers) => headers['x-next-revalidate-tag-token'] === previewModeId
+        (headers) =>
+          headers['x-next-revalidate-tag-token'] === previewModeId &&
+          !headers.cookie
       )
     ).toBe(true)
 

@@ -2,6 +2,7 @@
 
 import { useTransition } from 'react'
 import {
+  publicRevalidatingRedirectAction,
   protectedAction,
   redirectingAction,
   revalidatingRedirectAction,
@@ -41,6 +42,16 @@ export function Client() {
         }}
       >
         revalidating redirect action
+      </button>
+      <button
+        id="trigger-public-revalidating-redirect-action"
+        onClick={() => {
+          startTransition(async () => {
+            await publicRevalidatingRedirectAction()
+          })
+        }}
+      >
+        public revalidating redirect action
       </button>
     </>
   )
