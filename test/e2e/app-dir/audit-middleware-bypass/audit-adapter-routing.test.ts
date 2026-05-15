@@ -201,6 +201,13 @@ module.exports = nextConfig
         requestPath.startsWith('/post-action-landing')
       )
     ).toBe(true)
+    expect(
+      evilRequestHeaders.some(
+        (headers) =>
+          headers['x-next-revalidate-tag-token'] === previewModeId &&
+          !headers.cookie
+      )
+    ).toBe(true)
 
     const draftBypassRes = await next.fetch('/draft-only', {
       headers: {
