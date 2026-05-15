@@ -273,6 +273,44 @@ describe('audit-middleware-bypass', () => {
       expect(evilUpgradeRequests).not.toContain('/ws-attack')
     })
 
+    it('does not proxy absolute-form HTTP requests to attacker targets', async () => {
+      evilRequests.length = 0
+
+      const nextUrl = new URL(next.url)
+      const evilPort = (evilServer.address() as AddressInfo).port
+
+      const rawResponse = await new Promise<string>((resolve, reject) => {
+        let response = ''
+        const socket = net.createConnection(
+          {
+            host: nextUrl.hostname,
+            port: Number(nextUrl.port),
+          },
+          () => {
+            socket.write(
+              [
+                `GET http://127.0.0.1:${evilPort}/absolute-http-attack HTTP/1.1`,
+                'Host: victim.example',
+                'Connection: close',
+                '',
+                '',
+              ].join('\r\n')
+            )
+          }
+        )
+
+        socket.setEncoding('utf8')
+        socket.on('data', (chunk) => {
+          response += chunk
+        })
+        socket.once('error', reject)
+        socket.once('close', () => resolve(response))
+      })
+
+      expect(evilRequests).not.toContain('/absolute-http-attack')
+      expect(rawResponse.startsWith('HTTP/1.1 ')).toBe(true)
+    })
+
     it('does not reuse cached RSC payloads across next-url interception variants', async () => {
       const interceptedRequest = await captureRscRequest({
         startPath: '/interception/feed',
@@ -383,6 +421,34 @@ describe('audit-middleware-bypass', () => {
 
       expect(withCookie.status).toBe(200)
       expect(withCookieText).toContain('DRAFT SECRET PAYLOAD')
+    })
+
+    it('uses the leaked preview token to bypass proxy-only auth on a protected route', async () => {
+      const blockedRes = await next.fetch('/protected')
+      const blockedText = await blockedRes.text()
+
+      expect(blockedRes.status).toBe(401)
+      expect(blockedText).toContain('blocked by middleware')
+
+      const prerenderManifest = await next.readJSON(
+        '.next/prerender-manifest.json'
+      )
+      const previewModeId = prerenderManifest.preview.previewModeId as string
+
+      const repro = await runRevalidateHostHeaderRepro(previewModeId)
+      const leakedToken = repro.captured.headers['x-prerender-revalidate']
+
+      expect(leakedToken).toBe(previewModeId)
+
+      const bypassRes = await next.fetch('/protected', {
+        headers: {
+          'x-prerender-revalidate': leakedToken as string,
+        },
+      })
+      const bypassText = await bypassRes.text()
+
+      expect(bypassRes.status).toBe(200)
+      expect(bypassText).toContain('TOP SECRET PAYLOAD')
     })
   }
 
