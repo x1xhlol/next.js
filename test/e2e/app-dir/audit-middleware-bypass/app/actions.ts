@@ -1,6 +1,7 @@
 'use server'
 
 import { redirect } from 'next/navigation'
+import { revalidatePath } from 'next/cache'
 import { cookies } from 'next/headers'
 
 export async function protectedAction() {
@@ -27,5 +28,16 @@ export async function redirectingAction() {
     throw new Error('unauthorized')
   }
 
+  redirect('/post-action-landing')
+}
+
+export async function revalidatingRedirectAction() {
+  const cookieStore = await cookies()
+
+  if (cookieStore.get('auth')?.value !== '1') {
+    throw new Error('unauthorized')
+  }
+
+  revalidatePath('/protected')
   redirect('/post-action-landing')
 }

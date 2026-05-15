@@ -1,7 +1,11 @@
 'use client'
 
 import { useTransition } from 'react'
-import { protectedAction, redirectingAction } from './actions'
+import {
+  protectedAction,
+  redirectingAction,
+  revalidatingRedirectAction,
+} from './actions'
 
 export function Client() {
   const [isPending, startTransition] = useTransition()
@@ -27,6 +31,16 @@ export function Client() {
         }}
       >
         redirect action
+      </button>
+      <button
+        id="trigger-revalidating-redirect-action"
+        onClick={() => {
+          startTransition(async () => {
+            await revalidatingRedirectAction()
+          })
+        }}
+      >
+        revalidating redirect action
       </button>
     </>
   )
